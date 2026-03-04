@@ -1,0 +1,66 @@
+{
+  "projectType": "general",
+  "projectName": "Dice",
+  "projectDescription": "A low-level C program demonstrating window creation using the Wayland Wire Protocol",
+  "theme": "aspen",
+  "primaryColor": "#2563eb",
+  "lightColor": "#3b82f6",
+  "darkColor": "#1e40af",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Core Concepts",
+        "pages": [
+          "concepts/wayland-protocol",
+          "concepts/wire-protocol",
+          "concepts/socket-communication"
+        ]
+      },
+      {
+        "group": "Implementation Guide",
+        "pages": [
+          "guide/display-connection",
+          "guide/registry-binding",
+          "guide/surface-creation",
+          "guide/buffer-management",
+          "guide/event-loop"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "pages": [
+          "api/structures",
+          "api/functions",
+          "api/protocol-operations"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Direct Wayland protocol implementation in C",
+    "Window creation through Wire Protocol",
+    "Shared memory buffer management",
+    "XDG shell surface handling",
+    "Event-driven message processing"
+  ],
+  "publicApiSurface": [
+    "open_display_connection()",
+    "bind_request()",
+    "create_surface()",
+    "create_xdg_surface()",
+    "create_toplevel()",
+    "create_shm_pool()",
+    "create_buffer()",
+    "attach_buffer()",
+    "wl_surface_commit()",
+    "read_msg()",
+    "write_msg()"
+  ]
+}
