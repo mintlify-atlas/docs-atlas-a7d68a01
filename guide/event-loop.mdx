@@ -1,0 +1,344 @@
+---
+title: Event Loop and Event Handling
+description: Learn how to implement the main event loop and handle compositor events
+---
+
+## Overview
+
+Wayland is an **event-driven** protocol. After sending initial requests, your client must enter an event loop to:
+
+1. Read events from the compositor
+2. Process each event (configure, ping, etc.)
+3. Send appropriate responses
+4. Update the window as needed
+
+The event loop runs continuously until the application exits.
+
+## Message Structure
+
+All Wayland protocol messages (requests and events) share a common header:
+
+```c
+struct Header {
+  uint32_t object_id;
+  uint16_t opcode;
+  uint16_t size;
+};
+
+struct Request {
+  struct Header header;
+  void *data;
+  size_t data_len;
+};
+```
+
+**Reference**: dice.c:24-34
+
+- **object_id**: Which object this message is for/from
+- **opcode**: Which method/event (specific to each interface)
+- **size**: Total message size including header
+- **data**: Additional parameters (if any)
+
+## Reading Messages
+
+The `read_msg()` function reads a complete message from the socket:
+
+```c
+static int read_msg(int sockfd, struct Request *req) {
+  ssize_t bytes_read = read(sockfd, &req->header, sizeof(struct Header));
+  if (bytes_read == -1) {
+    perror("read");
+    return -1;
+  }
+  if (bytes_read < sizeof(struct Header)) {
+    fprintf(stderr, "Unexpected EOF while reading header\n");
+    return -1;
+  }
+
+  if (req->header.size > sizeof(struct Header)) {
+    req->data_len = req->header.size - sizeof(struct Header);
+    req->data = malloc(req->data_len);
+
+    bytes_read = read(sockfd, req->data, req->data_len);
+    if (bytes_read == -1 || bytes_read < req->data_len) {
+      perror("read data");
+      free(req->data);
+      req->data = NULL;
+      return -1;
+    }
+  } else {
+    req->data = NULL;
+    req->data_len = 0;
+  }
+
+  return 0;
+}
+```
+
+**Reference**: dice.c:120-148
+
+<Steps>
+
+### Step 1: Read Header
+
+Read exactly `sizeof(struct Header)` bytes to get the message metadata.
+
+### Step 2: Check for Data
+
+If `size > sizeof(struct Header)`, there are additional parameters.
+
+### Step 3: Read Data
+
+Allocate memory and read the remaining bytes.
+
+### Step 4: Return
+
+Return the complete message with header and data.
+
+</Steps>
+
+<Warning>
+Always free `msg.data` after processing the message, or you'll leak memory.
+</Warning>
+
+## Writing Messages
+
+The `write_msg()` function sends a request to the compositor:
+
+```c
+static int write_msg(int sockfd, struct Request *req) {
+  /* Write header */
+  if (write(sockfd, &req->header, sizeof(struct Header)) !=
+      sizeof(struct Header))
+    return -1;
+
+  /* Write data if any */
+  if (req->data && req->data_len > 0)
+    if (write(sockfd, req->data, req->data_len) != req->data_len)
+      return -1;
+
+  return 0;
+}
+```
+
+**Reference**: dice.c:106-118
+
+The function writes the header first, then the data payload (if any).
+
+## The Main Event Loop
+
+Dice has two event loops:
+
+1. **Initial loop**: Waits for registry globals and binds interfaces
+2. **Main loop**: Handles runtime events after the window is created
+
+### Initial Loop (Registry Phase)
+
+```c
+while (1) {
+  struct Request msg = {0};
+  if (read_msg(sockfd, &msg) != 0) {
+    fprintf(stderr, "ERROR: Failed to read msg\n");
+    break;
+  }
+
+  printf("\nMessage Header:\n");
+  printf(" - ObjectID: %u\n", msg.header.object_id);
+  printf(" - Opcode: %u\n", msg.header.opcode);
+  printf(" - Size: %u\n", msg.header.size);
+
+  if (msg.data) {
+    if (msg.header.object_id == registry_id && msg.header.opcode == 0) {
+      // ... parse global events and bind interfaces ...
+    }
+
+    free(msg.data);
+  }
+  if (required_interfaces == 3) {
+    // ... create surfaces and buffers ...
+    break; // Exit initial loop
+  }
+}
+```
+
+**Reference**: dice.c:436-558
+
+This loop:
+- Reads each message
+- Checks if it's a `wl_registry::global` event (object_id = registry_id, opcode = 0)
+- Binds to required interfaces
+- Once all 3 interfaces are bound, creates the window and exits
+
+### Main Loop (Runtime Phase)
+
+```c
+printf("Main loop...\n");
+while (1) {
+  struct Request msg = {0};
+  if (read_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: idk some error in main loop\n");
+    break;
+  }
+
+  if (msg.header.object_id == xdg_wm_base_id && msg.header.opcode == 0) {
+    /* Handle ping */
+    struct Request req = {
+        .header =
+            {
+                .object_id = xdg_wm_base_id,
+                .opcode = 1,
+                .size = sizeof(struct Header) + sizeof(uint32_t),
+            },
+        .data = msg.data,
+        .data_len = sizeof(uint32_t),
+    };
+    write_msg(sockfd, &req);
+  } else if (msg.header.object_id == interfaces.xdg_surface_id &&
+             msg.header.opcode == 0) {
+    struct Request req = {
+        .header =
+            {
+                .object_id = interfaces.xdg_surface_id,
+                .opcode = 2,
+                .size = sizeof(struct Header) + sizeof(uint32_t),
+            },
+        .data = msg.data,
+        .data_len = sizeof(struct Header) + sizeof(uint32_t),
+    };
+    write_msg(sockfd, &req);
+    attach_buffer(sockfd, interfaces.surface_id, buffer_id, width,
+                  height);
+  }
+
+  if (msg.data)
+    free(msg.data);
+}
+```
+
+**Reference**: dice.c:515-555
+
+## Handling Events
+
+### Ping Event (xdg_wm_base::ping)
+
+The compositor sends pings to check if the client is responsive:
+
+```c
+if (msg.header.object_id == xdg_wm_base_id && msg.header.opcode == 0) {
+  /* Handle ping */
+  struct Request req = {
+      .header =
+          {
+              .object_id = xdg_wm_base_id,
+              .opcode = 1,
+              .size = sizeof(struct Header) + sizeof(uint32_t),
+          },
+      .data = msg.data,
+      .data_len = sizeof(uint32_t),
+  };
+  write_msg(sockfd, &req);
+}
+```
+
+**Reference**: dice.c:523-535
+
+You must respond with `xdg_wm_base::pong` (opcode 1) echoing the serial number from the ping.
+
+<Warning>
+If you don't respond to pings, the compositor may mark your application as unresponsive and display a "not responding" dialog.
+</Warning>
+
+### Configure Event (xdg_surface::configure)
+
+The compositor sends configure events when the window should be shown or resized:
+
+```c
+else if (msg.header.object_id == interfaces.xdg_surface_id &&
+         msg.header.opcode == 0) {
+  struct Request req = {
+      .header =
+          {
+              .object_id = interfaces.xdg_surface_id,
+              .opcode = 2,
+              .size = sizeof(struct Header) + sizeof(uint32_t),
+          },
+      .data = msg.data,
+      .data_len = sizeof(struct Header) + sizeof(uint32_t),
+  };
+  write_msg(sockfd, &req);
+  attach_buffer(sockfd, interfaces.surface_id, buffer_id, width,
+                height);
+}
+```
+
+**Reference**: dice.c:536-550
+
+You must:
+1. Acknowledge the configure with `xdg_surface::ack_configure` (opcode 2)
+2. Attach a buffer to the surface
+3. Commit the surface
+
+The configure event contains a serial number that must be echoed in the ack.
+
+## Event Loop Structure
+
+Here's the overall flow:
+
+<Steps>
+
+### Step 1: Wait for Event
+
+Block on `read_msg()` until an event arrives.
+
+### Step 2: Identify Event
+
+Check `object_id` and `opcode` to determine which event this is.
+
+### Step 3: Process Event
+
+Take appropriate action based on the event type.
+
+### Step 4: Send Response
+
+Many events require a response (pong, ack_configure, etc.).
+
+### Step 5: Free Memory
+
+Free the event data before reading the next message.
+
+### Step 6: Repeat
+
+Loop back to step 1.
+
+</Steps>
+
+## Common Event Types
+
+| Object | Opcode | Event | Required Response |
+|--------|--------|-------|-------------------|
+| `xdg_wm_base` | 0 | ping | pong (opcode 1) |
+| `xdg_surface` | 0 | configure | ack_configure (opcode 2) + commit |
+| `xdg_toplevel` | 0 | configure | Handle size/state changes |
+| `xdg_toplevel` | 1 | close | Exit application |
+
+## When to Commit Surfaces
+
+You must commit the surface:
+
+1. **After initial configuration**: Once surfaces are created (dice.c:489)
+2. **After attaching a buffer**: When you want to display new content (dice.c:395)
+3. **After configure events**: When acknowledging window changes (dice.c:549)
+
+The commit operation applies all pending state changes atomically.
+
+## Next Steps
+
+You now understand the complete Wayland client implementation:
+
+1. [Connect to display](/guide/display-connection)
+2. [Bind to interfaces](/guide/registry-binding)
+3. [Create surfaces](/guide/surface-creation)
+4. [Create buffers](/guide/buffer-management)
+5. [Handle events](/guide/event-loop) ← You are here
+
+For more details about the Wayland protocol, see the [official protocol specification](https://wayland.freedesktop.org/docs/html/).

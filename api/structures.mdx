@@ -1,0 +1,99 @@
+---
+title: Data Structures
+description: Core data structures used in Dice for Wayland protocol communication
+---
+
+## Overview
+
+Dice uses three primary data structures to manage Wayland protocol communication. These structures handle message headers, request formatting, and interface ID tracking.
+
+## struct Header
+
+The message header structure used in all Wayland protocol messages.
+
+**Definition** (dice.c:24-28):
+
+```c
+struct Header {
+  uint32_t object_id;
+  uint16_t opcode;
+  uint16_t size;
+};
+```
+
+### Fields
+
+<ResponseField name="object_id" type="uint32_t" required>
+  The Wayland object identifier that this message is addressed to. Each object in the Wayland protocol has a unique ID assigned by the client.
+</ResponseField>
+
+<ResponseField name="opcode" type="uint16_t" required>
+  The operation code indicating which method to invoke on the target object. Each Wayland interface defines its own set of opcodes.
+</ResponseField>
+
+<ResponseField name="size" type="uint16_t" required>
+  Total size of the message in bytes, including the header itself. This must be at least `sizeof(struct Header)` (8 bytes).
+</ResponseField>
+
+## struct Request
+
+A complete Wayland protocol request containing a header and optional payload data.
+
+**Definition** (dice.c:30-34):
+
+```c
+struct Request {
+  struct Header header;
+  void *data;
+  size_t data_len;
+};
+```
+
+### Fields
+
+<ResponseField name="header" type="struct Header" required>
+  The message header containing object_id, opcode, and total message size.
+</ResponseField>
+
+<ResponseField name="data" type="void*">
+  Pointer to the request payload data. Can be NULL if the request has no arguments (e.g., wl_surface::commit).
+</ResponseField>
+
+<ResponseField name="data_len" type="size_t">
+  Length of the payload data in bytes. Must be 0 if data is NULL. The header.size field should equal `sizeof(struct Header) + data_len`.
+</ResponseField>
+
+## struct Interfaces
+
+Tracks the object IDs for surface-related Wayland objects created during window setup.
+
+**Definition** (dice.c:36-40):
+
+```c
+struct Interfaces {
+  uint32_t surface_id;
+  uint32_t xdg_surface_id;
+  uint32_t toplevel_id;
+};
+```
+
+### Fields
+
+<ResponseField name="surface_id" type="uint32_t" required>
+  The wl_surface object ID. This is the base surface created from wl_compositor that receives content and input events.
+</ResponseField>
+
+<ResponseField name="xdg_surface_id" type="uint32_t" required>
+  The xdg_surface object ID. This wraps the wl_surface and provides desktop window semantics through the XDG Shell protocol.
+</ResponseField>
+
+<ResponseField name="toplevel_id" type="uint32_t" required>
+  The xdg_toplevel object ID. This represents a top-level application window with typical window management features (minimize, maximize, close).
+</ResponseField>
+
+## Usage Notes
+
+- All structure fields use fixed-width integer types to ensure binary compatibility with the Wayland protocol
+- The Header and Request structures follow the Wayland wire protocol specification for message formatting
+- Object IDs must be unique within a connection and are typically allocated sequentially starting from ID 3 (IDs 1-2 are reserved)
+- Payload data must be properly aligned and padded according to Wayland protocol rules (4-byte alignment)

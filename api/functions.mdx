@@ -1,0 +1,460 @@
+---
+title: Functions
+description: Complete API reference for all functions in Dice
+---
+
+## Display Connection
+
+### get_display_path()
+
+**Location**: dice.c:43
+
+```c
+static char *get_display_path(void)
+```
+
+Constructs the full path to the Wayland display socket by combining the XDG runtime directory with the display name.
+
+#### Returns
+
+Pointer to the allocated display path string (e.g., "/run/user/1000/wayland-0"), or NULL on error. The caller is responsible for freeing this memory.
+
+#### Behavior
+
+1. Reads `XDG_RUNTIME_DIR` environment variable
+2. Reads `WAYLAND_DISPLAY` environment variable (defaults to "wayland-0" if not set)
+3. Allocates and returns the combined path
+4. Logs diagnostic information to stderr
+
+---
+
+### open_display_connection()
+
+**Location**: dice.c:70
+
+```c
+static int open_display_connection(void)
+```
+
+Establishes a Unix domain socket connection to the Wayland display server.
+
+#### Returns
+
+Socket file descriptor on success, or -1 on error.
+
+#### Behavior
+
+1. Gets the display path using `get_display_path()`
+2. Creates a `AF_UNIX` socket with `SOCK_STREAM` type
+3. Connects to the socket at the display path
+4. Returns the connected socket file descriptor
+
+---
+
+## Message I/O
+
+### write_msg()
+
+**Location**: dice.c:106
+
+```c
+static int write_msg(int sockfd, struct Request *req)
+```
+
+Writes a complete Wayland protocol message to the socket.
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="req" type="struct Request*" required>
+  Pointer to the request structure containing header and data to send
+</ParamField>
+
+#### Returns
+
+0 on success, -1 on error.
+
+#### Behavior
+
+1. Writes the request header (8 bytes) to the socket
+2. If data is present, writes the payload data
+3. Returns error if write operation fails
+
+---
+
+### read_msg()
+
+**Location**: dice.c:120
+
+```c
+static int read_msg(int sockfd, struct Request *req)
+```
+
+Reads a complete Wayland protocol message from the socket.
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="req" type="struct Request*" required>
+  Pointer to request structure to populate with received data. The caller must free req->data if non-NULL.
+</ParamField>
+
+#### Returns
+
+0 on success, -1 on error.
+
+#### Behavior
+
+1. Reads the message header from the socket
+2. If the message has payload data (size > header size), allocates memory and reads it
+3. Sets req->data to NULL and req->data_len to 0 if no payload
+4. Returns error on read failure or unexpected EOF
+
+---
+
+## Protocol Operations
+
+### bind_request()
+
+**Location**: dice.c:150
+
+```c
+static void bind_request(int sockfd, uint32_t registry_id, uint32_t name,
+                         const char *interface, uint32_t version,
+                         uint32_t new_id)
+```
+
+Sends a `wl_registry::bind` request to bind a global interface to a new object ID.
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="registry_id" type="uint32_t" required>
+  Object ID of the wl_registry object
+</ParamField>
+
+<ParamField path="name" type="uint32_t" required>
+  The name of the global object as advertised by the registry
+</ParamField>
+
+<ParamField path="interface" type="const char*" required>
+  Interface name string (e.g., "wl_compositor", "wl_shm")
+</ParamField>
+
+<ParamField path="version" type="uint32_t" required>
+  Protocol version number to bind
+</ParamField>
+
+<ParamField path="new_id" type="uint32_t" required>
+  New object ID to assign to the bound interface
+</ParamField>
+
+#### Behavior
+
+1. Calculates the required payload size including string padding
+2. Constructs the bind request with proper alignment
+3. Sends the request via `write_msg()`
+4. Exits on failure
+
+---
+
+### create_surface()
+
+**Location**: dice.c:185
+
+```c
+static uint32_t create_surface(int sockfd, uint32_t compositor_id)
+```
+
+Creates a new wl_surface object using `wl_compositor::create_surface` (opcode 0).
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="compositor_id" type="uint32_t" required>
+  Object ID of the bound wl_compositor interface
+</ParamField>
+
+#### Returns
+
+The newly allocated surface object ID.
+
+#### Behavior
+
+1. Allocates a new object ID from the global counter
+2. Sends create_surface request to the compositor
+3. Returns the new surface ID
+4. Exits on failure
+
+---
+
+### create_xdg_surface()
+
+**Location**: dice.c:208
+
+```c
+static uint32_t create_xdg_surface(int sockfd, uint32_t xdg_wm_base_id,
+                                   uint32_t surface_id)
+```
+
+Creates an xdg_surface from a wl_surface using `xdg_wm_base::get_xdg_surface` (opcode 2).
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="xdg_wm_base_id" type="uint32_t" required>
+  Object ID of the bound xdg_wm_base interface
+</ParamField>
+
+<ParamField path="surface_id" type="uint32_t" required>
+  Object ID of the wl_surface to wrap
+</ParamField>
+
+#### Returns
+
+The newly allocated xdg_surface object ID.
+
+---
+
+### create_toplevel()
+
+**Location**: dice.c:233
+
+```c
+static uint32_t create_toplevel(int sockfd, uint32_t xdg_surface_id)
+```
+
+Creates an xdg_toplevel window role using `xdg_surface::get_toplevel` (opcode 1).
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="xdg_surface_id" type="uint32_t" required>
+  Object ID of the xdg_surface to assign the toplevel role
+</ParamField>
+
+#### Returns
+
+The newly allocated xdg_toplevel object ID.
+
+---
+
+### wl_surface_commit()
+
+**Location**: dice.c:255
+
+```c
+static void wl_surface_commit(int sockfd, uint32_t surface_id)
+```
+
+Commits pending surface state using `wl_surface::commit` (opcode 6).
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="surface_id" type="uint32_t" required>
+  Object ID of the wl_surface to commit
+</ParamField>
+
+#### Behavior
+
+Sends a commit request with no payload data. This atomically applies all pending surface state changes (buffer attachments, damage regions, etc.).
+
+---
+
+## Shared Memory
+
+### create_shm_file()
+
+**Location**: dice.c:273
+
+```c
+static int create_shm_file(size_t size)
+```
+
+Creates an anonymous shared memory file descriptor using memfd.
+
+#### Parameters
+
+<ParamField path="size" type="size_t" required>
+  Size of the shared memory region in bytes
+</ParamField>
+
+#### Returns
+
+File descriptor on success, -1 on error.
+
+#### Behavior
+
+1. Creates a memfd with `MFD_CLOEXEC` flag
+2. Truncates the file to the requested size
+3. Returns the file descriptor
+
+---
+
+### map_shm_file()
+
+**Location**: dice.c:286
+
+```c
+static void *map_shm_file(int fd, size_t size)
+```
+
+Maps a shared memory file descriptor into process memory.
+
+#### Parameters
+
+<ParamField path="fd" type="int" required>
+  File descriptor of the shared memory file
+</ParamField>
+
+<ParamField path="size" type="size_t" required>
+  Size to map in bytes
+</ParamField>
+
+#### Returns
+
+Pointer to the mapped memory region, or NULL on error.
+
+#### Behavior
+
+Uses `mmap()` with `PROT_READ | PROT_WRITE` and `MAP_SHARED` flags to map the file into memory.
+
+---
+
+### create_shm_pool()
+
+**Location**: dice.c:295
+
+```c
+static uint32_t create_shm_pool(int sockfd, int fd, size_t size)
+```
+
+Creates a wl_shm_pool from a shared memory file descriptor using `wl_shm::create_pool` (opcode 0).
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="fd" type="int" required>
+  File descriptor of the shared memory file to pass to the compositor
+</ParamField>
+
+<ParamField path="size" type="size_t" required>
+  Size of the shared memory pool in bytes
+</ParamField>
+
+#### Returns
+
+The newly allocated wl_shm_pool object ID, or 0 on error.
+
+#### Behavior
+
+Uses `sendmsg()` with `SCM_RIGHTS` to transfer the file descriptor to the compositor along with the create_pool request.
+
+---
+
+### create_buffer()
+
+**Location**: dice.c:337
+
+```c
+static uint32_t create_buffer(int sockfd, uint32_t pool_id, int32_t width,
+                              int32_t height, int32_t stride, uint32_t format)
+```
+
+Creates a wl_buffer from a pool using `wl_shm_pool::create_buffer` (opcode 0).
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="pool_id" type="uint32_t" required>
+  Object ID of the wl_shm_pool
+</ParamField>
+
+<ParamField path="width" type="int32_t" required>
+  Buffer width in pixels
+</ParamField>
+
+<ParamField path="height" type="int32_t" required>
+  Buffer height in pixels
+</ParamField>
+
+<ParamField path="stride" type="int32_t" required>
+  Number of bytes per row (typically width * 4 for ARGB8888)
+</ParamField>
+
+<ParamField path="format" type="uint32_t" required>
+  Pixel format (e.g., 1 for ARGB8888)
+</ParamField>
+
+#### Returns
+
+The newly allocated wl_buffer object ID, or 0 on error.
+
+---
+
+### attach_buffer()
+
+**Location**: dice.c:363
+
+```c
+static void attach_buffer(int sockfd, uint32_t surface_id, uint32_t buffer_id,
+                          int32_t width, int32_t height)
+```
+
+Attaches a buffer to a surface, sets the damage region, and commits.
+
+#### Parameters
+
+<ParamField path="sockfd" type="int" required>
+  Socket file descriptor for the Wayland connection
+</ParamField>
+
+<ParamField path="surface_id" type="uint32_t" required>
+  Object ID of the wl_surface
+</ParamField>
+
+<ParamField path="buffer_id" type="uint32_t" required>
+  Object ID of the wl_buffer to attach
+</ParamField>
+
+<ParamField path="width" type="int32_t" required>
+  Width of the damage region
+</ParamField>
+
+<ParamField path="height" type="int32_t" required>
+  Height of the damage region
+</ParamField>
+
+#### Behavior
+
+1. Sends `wl_surface::attach` request (opcode 1) with offset (0, 0)
+2. Sends `wl_surface::damage` request (opcode 4) for the full surface
+3. Commits the surface to apply changes

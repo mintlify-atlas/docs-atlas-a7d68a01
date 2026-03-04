@@ -1,80 +1,148 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Compile and run Dice to see direct Wayland protocol communication in action
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
+Before you begin, ensure your system meets these requirements:
 
-### Step 1: Set up your local environment
+<Note>
+**Linux system with Wayland compositor** - Dice only works on Linux systems running a Wayland compositor (not X11). Common Wayland compositors include GNOME Shell (Wayland session), KDE Plasma (Wayland session), Sway, and Weston.
+</Note>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+- **C compiler** - GCC or Clang with C standard library support
+- **Wayland development files** - While Dice doesn't link against libwayland, you still need the protocol headers for reference
+- **Working Wayland session** - Verify with `echo $WAYLAND_DISPLAY` (should output something like `wayland-0`)
+
+## Compilation
+
+<Steps>
+  <Step title="Navigate to the source directory">
+    Open a terminal and navigate to where you've cloned or downloaded the Dice source code:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    cd ~/workspace/source
+    ```
+  </Step>
+
+  <Step title="Compile the program">
+    Compile `dice.c` using GCC with the following command:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    ```bash
+    gcc -o dice dice.c -D_GNU_SOURCE
+    ```
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    This creates an executable named `dice` in the current directory.
+    
+    <Info>
+    The `-D_GNU_SOURCE` flag enables GNU extensions needed for `memfd_create()` and other Linux-specific features.
+    </Info>
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Verify compilation">
+    Check that the executable was created successfully:
+    
+    ```bash
+    ls -lh dice
+    ```
+    
+    You should see the `dice` executable file listed.
+  </Step>
+</Steps>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+## Running the program
 
-### Step 3: Go live
+<Steps>
+  <Step title="Execute Dice">
+    Run the compiled program:
+    
+    ```bash
+    ./dice
+    ```
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Observe the output">
+    You should see diagnostic output in the terminal showing the connection process:
+    
+    ```
+    INFO: xdg_runtime_dir_path: /run/user/1000
+    INFO: display_name: wayland-0
+    INFO: path: /run/user/1000/wayland-0
+    SUCCESS: Successfully connected to sockfd
+    ```
+    
+    The program will discover Wayland global interfaces and bind to them:
+    
+    ```
+    Global Event:
+     - Name: 1
+     - Interface: wl_compositor
+     - Version: 6
+    Bind request for wl_compositor (ID: 3)
+    ```
+  </Step>
+
+  <Step title="See the window">
+    A 736x736 pixel window should appear on your screen displaying an image. The window will remain open, and the program will continue running in the terminal, printing protocol message details.
+  </Step>
+
+  <Step title="Exit the program">
+    Press `Ctrl+C` in the terminal to terminate the program and close the window.
+  </Step>
+</Steps>
+
+## What to expect
+
+When Dice runs successfully, you'll observe:
+
+1. **Terminal output** - Verbose logging showing each step of the Wayland protocol handshake, including object IDs, opcodes, and message sizes
+2. **Window appearance** - A standalone window managed by your compositor, just like any other application window
+3. **Event handling** - The program continues running to handle compositor events like configure requests and ping messages
+
+## Troubleshooting
+
+<Warning>
+**"ERROR: XDG_RUNTIME_DIR is not set"** - You're not running in a proper user session. Make sure you're logged into a graphical session, not just a TTY console.
+</Warning>
+
+<Warning>
+**"ERROR: Failed connection to socket"** - The Wayland compositor isn't running. Verify you're in a Wayland session (not X11) by running `echo $XDG_SESSION_TYPE`. It should output `wayland`.
+</Warning>
+
+### Common issues
+
+#### Running on X11 instead of Wayland
+If you're using GNOME or KDE, make sure you selected the Wayland session at login (not the default/X11 session). Look for "GNOME on Wayland" or "Plasma (Wayland)" in your login screen's session menu.
+
+#### Permission denied errors
+Ensure the socket at `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` has proper permissions:
+
+```bash
+ls -l $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY
+```
+
+It should be owned by your user account.
+
+#### Compilation errors
+If you see errors about missing headers or functions:
+
+```bash
+# Install build essentials (Debian/Ubuntu)
+sudo apt-get install build-essential
+
+# Install build essentials (Fedora)
+sudo dnf install gcc glibc-devel
+
+# Install build essentials (Arch)
+sudo pacman -S base-devel
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that you have Dice running, dive into the source code at `~/workspace/source/dice.c` to understand how each part works. Pay special attention to:
 
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+- `open_display_connection()` - How the Unix socket connection is established (dice.c:70)
+- `bind_request()` - How protocol messages are formatted with proper padding (dice.c:150)
+- `create_shm_pool()` - How file descriptors are passed using `sendmsg()` and `SCM_RIGHTS` (dice.c:295)
+- The main event loop - How the program reads and responds to compositor messages (dice.c:516)

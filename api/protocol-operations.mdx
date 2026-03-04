@@ -1,0 +1,362 @@
+---
+title: Wayland Protocol Operations
+description: Detailed reference for Wayland protocol requests and opcodes used in Dice
+---
+
+## Overview
+
+This page documents the specific Wayland protocol operations (requests) used by Dice to create and display a window. Each operation includes its opcode, parameters, and wire format.
+
+## Display Protocol
+
+### wl_display::get_registry
+
+**Opcode**: 1  
+**Object**: wl_display (ID: 1)  
+**Location**: dice.c:417
+
+Retrieves the global registry object that advertises available interfaces.
+
+#### Request Format
+
+```
+Header:
+  object_id: 1 (wl_display)
+  opcode: 1
+  size: 12
+
+Payload:
+  [0-3]: registry_id (uint32_t) - New object ID for the registry
+```
+
+#### Usage
+
+```c
+struct Request req = {
+    .header = {
+        .object_id = wl_display_object_id,  // 1
+        .opcode = 1,
+        .size = sizeof(struct Header) + sizeof(uint32_t),
+    },
+    .data = &registry_id,
+    .data_len = sizeof(uint32_t),
+};
+```
+
+---
+
+## Registry Protocol
+
+### wl_registry::bind
+
+**Opcode**: 0  
+**Object**: wl_registry (ID: 2)  
+**Location**: dice.c:150
+
+Binds a global interface to a new object ID, allowing the client to use that interface.
+
+#### Request Format
+
+```
+Header:
+  object_id: <registry_id>
+  opcode: 0
+  size: 8 + 4 + 4 + interface_len + padding + 4 + 4
+
+Payload:
+  [0-3]:   name (uint32_t) - Global name from registry event
+  [4-7]:   interface_len (uint32_t) - Length of interface string
+  [8-...]: interface (string) - Interface name
+  [...]:   padding (0-3 bytes for 4-byte alignment)
+  [...]:   version (uint32_t) - Interface version
+  [...]:   new_id (uint32_t) - New object ID to assign
+```
+
+#### Example
+
+Binding wl_compositor with name=1, version=4, new_id=3:
+
+```
+name: 1
+interface_len: 14 ("wl_compositor")
+interface: "wl_compositor\0"
+padding: 2 bytes
+version: 4
+new_id: 3
+```
+
+---
+
+## Compositor Protocol
+
+### wl_compositor::create_surface
+
+**Opcode**: 0  
+**Object**: wl_compositor  
+**Location**: dice.c:192
+
+Creates a new surface object that can receive content.
+
+#### Request Format
+
+```
+Header:
+  object_id: <compositor_id>
+  opcode: 0
+  size: 12
+
+Payload:
+  [0-3]: surface_id (uint32_t) - New object ID for the surface
+```
+
+---
+
+## Surface Protocol
+
+### wl_surface::attach
+
+**Opcode**: 1  
+**Object**: wl_surface  
+**Location**: dice.c:371
+
+Attaches a wl_buffer to the surface at a given offset.
+
+#### Request Format
+
+```
+Header:
+  object_id: <surface_id>
+  opcode: 1
+  size: 20
+
+Payload:
+  [0-3]:  buffer_id (uint32_t) - Buffer to attach
+  [4-7]:  x (int32_t) - X offset in surface coordinates
+  [8-11]: y (int32_t) - Y offset in surface coordinates
+```
+
+---
+
+### wl_surface::damage
+
+**Opcode**: 4  
+**Object**: wl_surface  
+**Location**: dice.c:384
+
+Marks a region of the surface as damaged and needing repaint.
+
+#### Request Format
+
+```
+Header:
+  object_id: <surface_id>
+  opcode: 4
+  size: 24
+
+Payload:
+  [0-3]:   x (int32_t) - X coordinate of damage region
+  [4-7]:   y (int32_t) - Y coordinate of damage region
+  [8-11]:  width (int32_t) - Width of damage region
+  [12-15]: height (int32_t) - Height of damage region
+```
+
+---
+
+### wl_surface::commit
+
+**Opcode**: 6  
+**Object**: wl_surface  
+**Location**: dice.c:260
+
+Atomically applies all pending surface state (attach, damage, etc.).
+
+#### Request Format
+
+```
+Header:
+  object_id: <surface_id>
+  opcode: 6
+  size: 8
+
+Payload: (none)
+```
+
+---
+
+## Shared Memory Protocol
+
+### wl_shm::create_pool
+
+**Opcode**: 0  
+**Object**: wl_shm  
+**Location**: dice.c:300
+
+Creates a shared memory pool from a file descriptor.
+
+#### Request Format
+
+```
+Header:
+  object_id: <wl_shm_id>
+  opcode: 0
+  size: 16
+
+Payload:
+  [0-3]: pool_id (uint32_t) - New object ID for the pool
+  [4-7]: size (uint32_t) - Size of the pool in bytes
+
+File Descriptor:
+  Passed via SCM_RIGHTS in sendmsg() control message
+```
+
+#### Special Note
+
+This request requires passing a file descriptor using `sendmsg()` with `SCM_RIGHTS`, not just a regular write.
+
+---
+
+### wl_shm_pool::create_buffer
+
+**Opcode**: 0  
+**Object**: wl_shm_pool  
+**Location**: dice.c:348
+
+Creates a wl_buffer from a region of the shared memory pool.
+
+#### Request Format
+
+```
+Header:
+  object_id: <pool_id>
+  opcode: 0
+  size: 32
+
+Payload:
+  [0-3]:   buffer_id (uint32_t) - New object ID for the buffer
+  [4-7]:   offset (int32_t) - Byte offset in pool (typically 0)
+  [8-11]:  width (int32_t) - Buffer width in pixels
+  [12-15]: height (int32_t) - Buffer height in pixels
+  [16-19]: stride (int32_t) - Bytes per row
+  [20-23]: format (uint32_t) - Pixel format (1 = ARGB8888)
+```
+
+---
+
+## XDG Shell Protocol
+
+### xdg_wm_base::get_xdg_surface
+
+**Opcode**: 2  
+**Object**: xdg_wm_base  
+**Location**: dice.c:216
+
+Creates an xdg_surface wrapper for a wl_surface.
+
+#### Request Format
+
+```
+Header:
+  object_id: <xdg_wm_base_id>
+  opcode: 2
+  size: 16
+
+Payload:
+  [0-3]: xdg_surface_id (uint32_t) - New object ID
+  [4-7]: surface_id (uint32_t) - wl_surface to wrap
+```
+
+---
+
+### xdg_wm_base::pong
+
+**Opcode**: 1  
+**Object**: xdg_wm_base  
+**Location**: dice.c:529
+
+Responds to a ping event from the compositor.
+
+#### Request Format
+
+```
+Header:
+  object_id: <xdg_wm_base_id>
+  opcode: 1
+  size: 12
+
+Payload:
+  [0-3]: serial (uint32_t) - Serial from the ping event
+```
+
+#### Usage
+
+The compositor sends a ping event (opcode 0) with a serial number. The client must respond with a pong using the same serial to prove it's responsive.
+
+---
+
+### xdg_surface::get_toplevel
+
+**Opcode**: 1  
+**Object**: xdg_surface  
+**Location**: dice.c:240
+
+Assigns the toplevel role to an xdg_surface, making it a regular application window.
+
+#### Request Format
+
+```
+Header:
+  object_id: <xdg_surface_id>
+  opcode: 1
+  size: 12
+
+Payload:
+  [0-3]: toplevel_id (uint32_t) - New object ID for the toplevel
+```
+
+---
+
+### xdg_surface::ack_configure
+
+**Opcode**: 4  
+**Object**: xdg_surface  
+**Location**: dice.c:542
+
+Acknowledges a configure event from the compositor.
+
+#### Request Format
+
+```
+Header:
+  object_id: <xdg_surface_id>
+  opcode: 4
+  size: 12
+
+Payload:
+  [0-3]: serial (uint32_t) - Serial from the configure event
+```
+
+#### Usage
+
+When the compositor sends a configure event (opcode 0) with window size and state information, the client must acknowledge it before committing the surface.
+
+---
+
+## Wire Protocol Notes
+
+### Message Alignment
+
+- All messages must be 4-byte aligned
+- String fields include length prefix and null terminator
+- Padding bytes are added after strings to maintain alignment
+
+### Object ID Allocation
+
+- ID 1: wl_display (reserved)
+- ID 2: wl_registry (typically)
+- ID 3+: Client-allocated objects
+
+The global `wl_id` counter (dice.c:22) starts at 3 and increments for each new object.
+
+### File Descriptor Passing
+
+Some requests (like `wl_shm::create_pool`) pass file descriptors using Unix socket control messages (`SCM_RIGHTS`). This is handled specially in `create_shm_pool()` using `sendmsg()` instead of the normal `write_msg()` function.

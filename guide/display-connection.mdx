@@ -1,0 +1,165 @@
+---
+title: Connecting to the Wayland Display
+description: Learn how to establish a connection to the Wayland display server through Unix domain sockets
+---
+
+## Overview
+
+Connecting to a Wayland display server requires establishing a Unix domain socket connection. The Wayland protocol operates over this socket, allowing clients to communicate with the compositor.
+
+## Environment Variables
+
+Wayland uses two key environment variables to locate the display socket:
+
+- **XDG_RUNTIME_DIR**: The base directory for runtime files (typically `/run/user/1000`)
+- **WAYLAND_DISPLAY**: The display name (defaults to `wayland-0` if not set)
+
+<Warning>
+If `XDG_RUNTIME_DIR` is not set, the connection will fail. Always check for this environment variable before attempting to connect.
+</Warning>
+
+## Getting the Display Path
+
+The `get_display_path()` function constructs the full socket path by combining these environment variables:
+
+```c
+/* Forms final display socket path */
+static char *get_display_path(void) {
+  /* Get XDG runtime path */
+  char *xdg_runtime_dir_path = getenv("XDG_RUNTIME_DIR");
+  if (xdg_runtime_dir_path == NULL) {
+    fprintf(stderr, "ERROR: XDG_RUNTIME_DIR is not set: %s\n", strerror(errno));
+    return NULL;
+  }
+  fprintf(stderr, "INFO: xdg_runtime_dir_path: %s\n", xdg_runtime_dir_path);
+
+  /* Get Wayland display name (wayland-0 default) */
+  char *wayland_display = getenv("WAYLAND_DISPLAY");
+  if (wayland_display == NULL)
+    wayland_display = "wayland-0";
+  fprintf(stderr, "INFO: display_name: %s\n", wayland_display);
+
+  /* Construct full display path */
+  size_t display_path_len =
+      strlen(xdg_runtime_dir_path) + strlen(wayland_display) + 2;
+  char *display_path = malloc(display_path_len);
+  snprintf(display_path, display_path_len, "%s/%s", xdg_runtime_dir_path,
+           wayland_display);
+
+  fprintf(stderr, "INFO: path: %s\n", display_path);
+  return display_path;
+}
+```
+
+**Reference**: dice.c:43-67
+
+The function performs these steps:
+
+1. Retrieves `XDG_RUNTIME_DIR` from the environment
+2. Checks if the variable exists (returns NULL if not)
+3. Gets `WAYLAND_DISPLAY` or defaults to `"wayland-0"`
+4. Allocates memory for the full path
+5. Constructs the path as `<XDG_RUNTIME_DIR>/<WAYLAND_DISPLAY>`
+6. Returns the allocated path (caller must free)
+
+## Opening the Connection
+
+<Steps>
+
+### Step 1: Get the Display Path
+
+Call `get_display_path()` to retrieve the socket path.
+
+### Step 2: Create a Unix Domain Socket
+
+Create a socket with `AF_UNIX` family and `SOCK_STREAM` type:
+
+```c
+int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+```
+
+### Step 3: Configure Socket Address
+
+Set up a `sockaddr_un` structure with the display path:
+
+```c
+struct sockaddr_un socket_addr;
+memset(&socket_addr, 0, sizeof(socket_addr));
+socket_addr.sun_family = AF_UNIX;
+strcpy(socket_addr.sun_path, path);
+```
+
+### Step 4: Connect to the Server
+
+Connect to the Wayland compositor:
+
+```c
+int addrlen = sizeof(socket_addr);
+if (connect(sockfd, (struct sockaddr *)&socket_addr, addrlen) == -1) {
+  fprintf(stderr, "ERROR: Failed connection to socket: %s\n",
+          strerror(errno));
+  close(sockfd);
+  free(path);
+  return -1;
+}
+```
+
+</Steps>
+
+## Complete Implementation
+
+Here's the full `open_display_connection()` function from dice.c:
+
+```c
+/* Establishes a connection to Wayland display server through Unix socket */
+static int open_display_connection(void) {
+  char *path = get_display_path();
+  if (path == NULL) {
+    fprintf(stderr, "ERROR: Failed in retrieving display path: %s\n",
+            strerror(errno));
+    return 1;
+  }
+  fprintf(stderr, "INFO: open_connection path: %s\n", path);
+
+  /* Create Unix domain socket */
+  int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (sockfd == -1) {
+    fprintf(stderr, "ERROR: Socket creation failed: %s\n", strerror(errno));
+    free(path);
+    return -1;
+  }
+
+  /* Configure socket connection */
+  struct sockaddr_un socket_addr;
+  memset(&socket_addr, 0, sizeof(socket_addr));
+  socket_addr.sun_family = AF_UNIX;
+  strcpy(socket_addr.sun_path, path);
+  int addrlen = sizeof(socket_addr);
+  if (connect(sockfd, (struct sockaddr *)&socket_addr, addrlen) == -1) {
+    fprintf(stderr, "ERROR: Failed connection to socket: %s\n",
+            strerror(errno));
+    close(sockfd);
+    free(path);
+    return -1;
+  }
+
+  fprintf(stderr, "SUCCESS: Successfully connected to sockfd\n");
+  free(path);
+  return sockfd;
+}
+```
+
+**Reference**: dice.c:69-104
+
+## Return Value
+
+The function returns:
+- A valid file descriptor (>= 0) on success
+- `-1` on failure (socket creation or connection error)
+- `1` if the display path cannot be determined
+
+This socket file descriptor is used for all subsequent communication with the Wayland compositor.
+
+## Next Steps
+
+After establishing the connection, the next step is to get the registry and bind to the required global interfaces. See [Registry Binding](/guide/registry-binding) for details.

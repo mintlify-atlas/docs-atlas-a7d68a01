@@ -1,0 +1,70 @@
+---
+title: Introduction
+description: Learn about Dice, a minimal C program that demonstrates window creation using the Wayland Wire Protocol without libwayland-client
+---
+
+## What is Dice?
+
+Dice is a low-level C program that demonstrates how to create a window on Wayland by communicating directly with the Wayland compositor using the raw wire protocol. Unlike most Wayland applications that rely on `libwayland-client`, Dice implements the protocol from scratch using Unix domain sockets.
+
+When you run Dice, it creates a 736x736 pixel window displaying an image. Behind the scenes, it manually constructs and parses Wayland protocol messages, handles shared memory buffers, and manages the XDG shell surface lifecycle.
+
+## Why does Dice exist?
+
+Dice serves as an educational resource for developers who want to understand what happens "under the hood" when creating Wayland applications. By stripping away the abstractions provided by `libwayland-client`, you can see:
+
+- How the Wayland wire protocol works at the byte level
+- How Unix domain sockets enable communication with the compositor
+- How shared memory buffers transfer pixel data between client and compositor
+- How the XDG shell protocol manages window surfaces
+
+This knowledge is valuable for:
+- Implementing Wayland support in new programming languages
+- Debugging complex Wayland issues
+- Understanding the performance characteristics of Wayland
+- Building custom Wayland protocols or compositors
+
+## What you'll learn
+
+By studying the Dice source code, you'll gain hands-on knowledge of:
+
+### Direct protocol implementation
+You'll see how to manually construct Wayland protocol messages with proper headers, opcodes, and payload formatting, including string padding and alignment requirements.
+
+### Unix socket communication
+The program demonstrates connecting to the Wayland compositor through Unix domain sockets located at `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`.
+
+### Wire protocol format
+Every message follows a strict format with an 8-byte header containing the object ID, opcode, and message size:
+
+```c
+struct Header {
+  uint32_t object_id;
+  uint16_t opcode;
+  uint16_t size;
+};
+```
+
+### Shared memory management
+Dice creates memory-mapped file descriptors using `memfd_create()` and transfers them to the compositor using `SCM_RIGHTS` over the Unix socket.
+
+### XDG shell lifecycle
+The code walks through the complete window creation process:
+1. Get the registry and bind to required global interfaces (`wl_compositor`, `wl_shm`, `xdg_wm_base`)
+2. Create a `wl_surface` for the window content
+3. Create an `xdg_surface` wrapper for the surface
+4. Create an `xdg_toplevel` to make it a top-level window
+5. Commit the surface configuration
+6. Create a shared memory pool and buffer for pixel data
+7. Attach the buffer and commit again to display content
+
+### Event handling
+The main event loop demonstrates reading and responding to compositor events, including XDG shell ping/pong messages for responsiveness checking.
+
+<Note>
+Dice is intended as a learning tool, not a production-quality framework. Real applications should use `libwayland-client` or higher-level toolkits for proper error handling, performance optimizations, and maintainability.
+</Note>
+
+## Next steps
+
+Ready to see Dice in action? Head to the [Quickstart](/quickstart) guide to compile and run the program.

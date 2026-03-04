@@ -1,0 +1,304 @@
+---
+title: Buffer Management
+description: Learn how to create shared memory buffers and attach them to surfaces
+---
+
+## Overview
+
+Wayland uses **shared memory** (SHM) for efficient pixel buffer transfer between clients and the compositor. Instead of copying pixel data over the socket, both processes map the same memory region.
+
+The buffer creation process involves:
+
+1. Creating a shared memory file
+2. Mapping the file into memory
+3. Creating a `wl_shm_pool` from the file descriptor
+4. Creating a `wl_buffer` from the pool
+5. Attaching the buffer to a surface
+
+## Creating a Shared Memory File
+
+The `create_shm_file()` function uses `memfd_create` to create an anonymous file:
+
+```c
+static int create_shm_file(size_t size) {
+  int fd = memfd_create("buffer", MFD_CLOEXEC);
+  if (fd < 0)
+    return -1;
+
+  if (ftruncate(fd, size) < 0) {
+    close(fd);
+    return -1;
+  }
+
+  return fd;
+}
+```
+
+**Reference**: dice.c:273-284
+
+### Why memfd_create?
+
+- Creates a file descriptor without needing a filesystem path
+- The file exists only in memory (tmpfs)
+- `MFD_CLOEXEC` ensures the fd is closed on exec
+- `ftruncate` sets the file size to match the buffer
+
+## Mapping the File to Memory
+
+The `map_shm_file()` function maps the file descriptor into the process address space:
+
+```c
+static void *map_shm_file(int fd, size_t size) {
+  void *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (data == MAP_FAILED) {
+    fprintf(stderr, "ERROR: mmap failed: %s\n", strerror(errno));
+    return NULL;
+  }
+  return data;
+}
+```
+
+**Reference**: dice.c:286-293
+
+Key parameters:
+- `NULL`: Let the kernel choose the address
+- `PROT_READ | PROT_WRITE`: Allow reading and writing
+- `MAP_SHARED`: Changes are visible to other processes (including the compositor)
+- `fd`: The file descriptor to map
+- `0`: Offset in the file (start from beginning)
+
+<Warning>
+You must use `MAP_SHARED`, not `MAP_PRIVATE`. The compositor needs to see changes you make to the pixel data.
+</Warning>
+
+## Creating a wl_shm_pool
+
+The `create_shm_pool()` function sends the file descriptor to the compositor:
+
+```c
+static uint32_t create_shm_pool(int sockfd, int fd, size_t size) {
+  uint32_t pool_id = wl_id++;
+
+  struct Header header = {
+      .object_id = wl_shm_id,
+      .opcode = 0, // wl_shm::create_pool
+      .size = sizeof(struct Header) + 8,
+  };
+
+  uint32_t data[2] = {pool_id, (uint32_t)size};
+
+  /* Sending the file descriptor - fd */
+  struct msghdr msg = {0};
+  struct cmsghdr *cmsg;
+  char control[CMSG_SPACE(sizeof(int))];
+  struct iovec iov[2];
+
+  iov[0].iov_base = &header;
+  iov[0].iov_len = sizeof(header);
+  iov[1].iov_base = data;
+  iov[1].iov_len = sizeof(data);
+
+  msg.msg_iov = iov;
+  msg.msg_iovlen = 2;
+  msg.msg_control = control;
+  msg.msg_controllen = sizeof(control);
+
+  cmsg = CMSG_FIRSTHDR(&msg);
+  cmsg->cmsg_level = SOL_SOCKET;
+  cmsg->cmsg_type = SCM_RIGHTS;
+  cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+  *(int *)CMSG_DATA(cmsg) = fd;
+
+  if (sendmsg(sockfd, &msg, 0) < 0) {
+    fprintf(stderr, "ERROR: Failed to send SHM pool creation request: %s\n",
+            strerror(errno));
+    return 0;
+  }
+
+  return pool_id;
+}
+```
+
+**Reference**: dice.c:295-335
+
+### File Descriptor Passing
+
+This function uses **Unix domain socket ancillary data** to pass the file descriptor:
+
+<Steps>
+
+### Step 1: Prepare the Message
+
+Set up `iovec` structures for the header and data.
+
+### Step 2: Configure Control Message
+
+Use `SCM_RIGHTS` to indicate we're passing a file descriptor.
+
+### Step 3: Attach File Descriptor
+
+Place the fd in the control message data.
+
+### Step 4: Send with sendmsg
+
+Use `sendmsg()` instead of regular `write()` to send both the message and the fd.
+
+</Steps>
+
+The compositor receives both the pool parameters and direct access to the shared memory file.
+
+## Creating a Buffer
+
+The `create_buffer()` function creates a `wl_buffer` from the pool:
+
+```c
+static uint32_t create_buffer(int sockfd, uint32_t pool_id, int32_t width,
+                              int32_t height, int32_t stride, uint32_t format) {
+  uint32_t buffer_id = wl_id++;
+  printf("Buffer ID: %u\n", buffer_id);
+  // stride: number of bytes in a row (width * 4)
+  uint32_t data[6] = {buffer_id, 0, width, height, stride, format};
+
+  struct Request req = {
+      .header =
+          {
+              .object_id = pool_id,
+              .opcode = 0, // wl_shm_pool::create_buffer
+              .size = sizeof(struct Header) + 24,
+          },
+      .data = data,
+      .data_len = 24,
+  };
+  if (write_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: Failed to create buffer\n");
+    return 0;
+  }
+  printf("Buffer created successfully\n");
+
+  return buffer_id;
+}
+```
+
+**Reference**: dice.c:337-361
+
+### Buffer Parameters
+
+- **buffer_id**: New object ID for the buffer
+- **offset**: Starting position in the pool (usually 0)
+- **width**: Width in pixels
+- **height**: Height in pixels
+- **stride**: Bytes per row (typically `width * 4` for ARGB8888)
+- **format**: Pixel format (1 = `WL_SHM_FORMAT_XRGB8888`)
+
+### Pixel Format and Stride
+
+Dice uses format `1` (XRGB8888):
+- Each pixel is 4 bytes (X, R, G, B)
+- X is unused/alpha channel
+- Stride = `width * 4` bytes
+
+```c
+int32_t width = 736, height = 736;
+int32_t stride = width * 4;
+size_t buffer_size = stride * height;
+```
+
+**Reference**: dice.c:432-434
+
+## Attaching a Buffer to a Surface
+
+The `attach_buffer()` function attaches the buffer and marks the damage region:
+
+```c
+static void attach_buffer(int sockfd, uint32_t surface_id, uint32_t buffer_id,
+                          int32_t width, int32_t height) {
+  int32_t data[3] = {buffer_id, 0, 0};
+
+  struct Request req = {
+      .header =
+          {
+              .object_id = surface_id,
+              .opcode = 1, // wl_surface::attach
+              .size = sizeof(struct Header) + 12,
+          },
+      .data = data,
+      .data_len = 12,
+  };
+  if (write_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: Failed to attach buffer\n");
+    exit(1);
+  }
+  printf("Buffer attached to wl_surface (ID: %u)\n", surface_id);
+
+  /* Define damage region */
+  req.header.opcode = 4;
+  req.header.size = sizeof(struct Header) + 16;
+  req.data_len = 16;
+  int32_t damage[4] = {0, 0, width, height};
+  req.data = damage;
+  if (write_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: Failed to set damage region\n");
+    exit(1);
+  }
+  printf("Damage region: width=%u, height=%u\n", width, height);
+
+  wl_surface_commit(sockfd, surface_id);
+}
+```
+
+**Reference**: dice.c:363-396
+
+<Steps>
+
+### Step 1: Attach Buffer
+
+Send `wl_surface::attach` (opcode 1) with the buffer ID and offset (0, 0).
+
+### Step 2: Set Damage
+
+Send `wl_surface::damage` (opcode 4) to tell the compositor which region changed.
+
+### Step 3: Commit
+
+Commit the surface to make the buffer visible.
+
+</Steps>
+
+<Warning>
+Always specify a damage region. The compositor may not repaint the surface if you don't indicate what changed.
+</Warning>
+
+## Writing Pixel Data
+
+After mapping the buffer, you can write pixel data directly:
+
+```c
+int fd = create_shm_file(buffer_size);
+void *data = map_shm_file(fd, buffer_size);
+
+uint32_t pool_id = create_shm_pool(sockfd, fd, buffer_size);
+uint32_t buffer_id = create_buffer(sockfd, pool_id, width, height, stride, 1);
+
+uint32_t *pixels = (uint32_t *)data;
+for (int i = 0; i < width * height; i++) {
+  /* Alya Image */
+  uint8_t r = alya_logo[i * 3 + 0];
+  uint8_t g = alya_logo[i * 3 + 1];
+  uint8_t b = alya_logo[i * 3 + 2];
+  pixels[i] = (r << 16) | (g << 8) | b;
+}
+
+attach_buffer(sockfd, interfaces.surface_id, buffer_id, width, height);
+```
+
+**Reference**: dice.c:495-513
+
+Pixel format for XRGB8888:
+- Bits 16-23: Red
+- Bits 8-15: Green
+- Bits 0-7: Blue
+- Bits 24-31: Unused (X)
+
+## Next Steps
+
+After attaching a buffer, you need to handle events from the compositor. See [Event Loop](/guide/event-loop) for details on the main loop.

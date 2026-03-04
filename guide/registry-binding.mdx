@@ -1,0 +1,207 @@
+---
+title: Registry and Interface Binding
+description: Learn how to retrieve the global registry and bind to Wayland protocol interfaces
+---
+
+## Overview
+
+After connecting to the Wayland display server, you must retrieve the **registry object** to discover available global interfaces. The registry provides information about all compositor features your client can use.
+
+## The Registry Object
+
+The registry is obtained by sending a `wl_display::get_registry` request. This is the first protocol message sent after connection.
+
+### Requesting the Registry
+
+In dice.c, the registry request is sent in the main function:
+
+```c
+uint32_t registry_id = 2;
+struct Request req = {
+    .header =
+        {
+            .object_id = wl_display_object_id,
+            .opcode = 1, // wl_display::get_registry
+            .size = sizeof(struct Header) + sizeof(uint32_t),
+        },
+    .data = &registry_id,
+    .data_len = sizeof(uint32_t),
+};
+
+if (write_msg(sockfd, &req) != 0) {
+  fprintf(stderr, "ERROR: Failed to write registry request\n");
+  exit(1);
+}
+```
+
+**Reference**: dice.c:412-427
+
+Key points:
+- `wl_display` always has object ID `1`
+- Opcode `1` corresponds to `wl_display::get_registry`
+- The new registry object is assigned ID `2`
+
+## Global Events
+
+After requesting the registry, the compositor responds with `wl_registry::global` events for each available interface. These events contain:
+
+- **name**: A unique numeric identifier for this global object
+- **interface**: String name of the interface (e.g., "wl_compositor")
+- **version**: The interface version supported by the compositor
+
+### Parsing Global Events
+
+The event data is parsed from the message payload:
+
+```c
+if (msg.header.object_id == registry_id && msg.header.opcode == 0) {
+  uint8_t *data = (uint8_t *)msg.data;
+  uint32_t name = *(uint32_t *)data;
+  uint32_t interface_len = *(uint32_t *)(data + 4);
+  char *interface = (char *)(data + 8);
+  uint32_t padding = (4 - (interface_len % 4)) % 4;
+  uint32_t version = *(uint32_t *)(data + 8 + interface_len + padding);
+
+  printf("Global Event:\n");
+  printf(" - Name: %u\n", name);
+  printf(" - Interface: %s\n", interface);
+  printf(" - Version: %u\n", version);
+}
+```
+
+**Reference**: dice.c:449-460
+
+<Warning>
+Strings in Wayland protocol messages are padded to 4-byte boundaries. Always calculate padding when parsing string arguments.
+</Warning>
+
+## Binding to Interfaces
+
+To use a global interface, you must **bind** to it using `wl_registry::bind`. This creates a new object representing that interface.
+
+### The bind_request Function
+
+The `bind_request()` function sends a bind request for a specific interface:
+
+```c
+static void bind_request(int sockfd, uint32_t registry_id, uint32_t name,
+                         const char *interface, uint32_t version,
+                         uint32_t new_id) {
+  size_t interface_len = strlen(interface) + 1;
+  size_t padding = (4 - (interface_len % 4)) % 4;
+  size_t data_size = 4 + 4 + interface_len + padding + 4 + 4;
+  uint8_t *data = malloc(data_size);
+
+  *(uint32_t *)(data) = name;
+  *(uint32_t *)(data + 4) = interface_len;
+  memcpy(data + 8, interface, interface_len);
+  memset(data + 8 + interface_len, 0, padding);
+  *(uint32_t *)(data + 8 + interface_len + padding) = version;
+  *(uint32_t *)(data + 8 + interface_len + padding + 4) = new_id;
+
+  struct Request req = {
+      .header =
+          {
+              .object_id = registry_id,
+              .opcode = 0,
+              .size = sizeof(struct Header) + data_size,
+          },
+      .data = data,
+      .data_len = data_size,
+  };
+  if (write_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: Failed to bind %s\n", interface);
+    free(data);
+    exit(1);
+  }
+
+  free(data);
+  printf("Bind request for %s (ID: %u)\n", interface, new_id);
+}
+```
+
+**Reference**: dice.c:150-183
+
+### Bind Request Parameters
+
+<Steps>
+
+### Step 1: Name
+
+The first parameter is the `name` from the global event - this identifies which global object to bind.
+
+### Step 2: Interface String
+
+The interface name as a length-prefixed, null-terminated string with padding.
+
+### Step 3: Version
+
+The interface version. You can request any version up to the compositor's maximum.
+
+### Step 4: New ID
+
+The object ID you're assigning to the new bound object. Must be unique and not yet used.
+
+</Steps>
+
+## Required Interfaces
+
+Dice requires three global interfaces to create a window:
+
+1. **wl_compositor**: Creates surfaces
+2. **wl_shm**: Provides shared memory buffers
+3. **xdg_wm_base**: Manages application windows (XDG shell protocol)
+
+### Binding Required Interfaces
+
+```c
+/* Bind required interfaces */
+if (strcmp(interface, "wl_compositor") == 0) {
+  bind_request(sockfd, registry_id, name, interface, version, wl_id);
+  wl_compositor_id = wl_id;
+  wl_id++, required_interfaces++;
+} else if (strcmp(interface, "wl_shm") == 0) {
+  bind_request(sockfd, registry_id, name, interface, version, wl_id);
+  wl_shm_id = wl_id;
+  wl_id++, required_interfaces++;
+} else if (strcmp(interface, "xdg_wm_base") == 0) {
+  bind_request(sockfd, registry_id, name, interface, version, wl_id);
+  xdg_wm_base_id = wl_id;
+  wl_id++, required_interfaces++;
+}
+```
+
+**Reference**: dice.c:463-475
+
+The code:
+- Checks each global event's interface name
+- Binds to interfaces we need
+- Stores the assigned object IDs for later use
+- Increments the object ID counter (`wl_id`)
+- Tracks how many required interfaces have been bound
+
+## Object ID Management
+
+Wayland requires each object to have a unique ID. Dice uses a simple counter:
+
+```c
+static const uint32_t wl_display_object_id = 1;
+static uint32_t wl_compositor_id = 0;
+static uint32_t wl_shm_id = 0;
+static uint32_t xdg_wm_base_id = 0;
+static uint32_t wl_id = 3;
+```
+
+**Reference**: dice.c:18-22
+
+- Object ID `1` is always `wl_display`
+- Object ID `2` is the registry
+- Starting from ID `3`, we allocate new IDs sequentially
+
+<Warning>
+Never reuse object IDs. Each new object must have a unique ID that hasn't been used before in the connection.
+</Warning>
+
+## Next Steps
+
+Once you've bound to `wl_compositor`, `wl_shm`, and `xdg_wm_base`, you can create surfaces. See [Surface Creation](/guide/surface-creation) for the next step.

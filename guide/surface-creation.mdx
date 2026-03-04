@@ -1,0 +1,232 @@
+---
+title: Creating Surfaces
+description: Learn how to create wl_surface, xdg_surface, and toplevel window objects
+---
+
+## Overview
+
+In Wayland, displaying content requires creating a hierarchy of surface objects:
+
+1. **wl_surface**: The base surface that receives buffers
+2. **xdg_surface**: XDG shell extension that adds desktop window behavior
+3. **xdg_toplevel**: Represents a top-level application window
+
+These three objects work together to create a functional window.
+
+## The Surface Hierarchy
+
+```
+wl_compositor → wl_surface
+                    ↓
+xdg_wm_base → xdg_surface (wraps wl_surface)
+                    ↓
+              xdg_toplevel (manages window behavior)
+```
+
+Each layer adds functionality:
+- `wl_surface` handles rendering and buffers
+- `xdg_surface` adds window lifecycle management
+- `xdg_toplevel` adds minimize, maximize, fullscreen, etc.
+
+## Creating a wl_surface
+
+The `create_surface()` function sends a `wl_compositor::create_surface` request:
+
+```c
+static uint32_t create_surface(int sockfd, uint32_t compositor_id) {
+  uint32_t surface_id = wl_id++;
+
+  struct Request req = {
+      .header =
+          {
+              .object_id = compositor_id,
+              .opcode = 0, // wl_compositor::create_surface
+              .size = sizeof(struct Header) + sizeof(uint32_t),
+          },
+      .data = &surface_id,
+      .data_len = sizeof(uint32_t),
+  };
+
+  if (write_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: Failed to create a surface\n");
+    exit(1);
+  }
+
+  printf("INFO: Created a surface with ID: %u\n", surface_id);
+  return surface_id;
+}
+```
+
+**Reference**: dice.c:185-206
+
+<Steps>
+
+### Step 1: Allocate Object ID
+
+Generate a new unique object ID for the surface.
+
+### Step 2: Send Request
+
+Send `wl_compositor::create_surface` (opcode 0) with the new surface ID.
+
+### Step 3: Store ID
+
+Return the surface ID for use in subsequent operations.
+
+</Steps>
+
+## Creating an xdg_surface
+
+The `create_xdg_surface()` function wraps a `wl_surface` with XDG shell functionality:
+
+```c
+static uint32_t create_xdg_surface(int sockfd, uint32_t xdg_wm_base_id,
+                                   uint32_t surface_id) {
+  uint32_t xdg_surface_id = wl_id++;
+
+  struct Request req = {
+      .header =
+          {
+              .object_id = xdg_wm_base_id,
+              .opcode = 2, // xdg_wm_base::get_xdg_surface
+              .size = sizeof(struct Header) + 8,
+          },
+      .data_len = 8,
+  };
+
+  uint32_t data[2] = {xdg_surface_id, surface_id};
+  req.data = data;
+
+  if (write_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: Failed to create XDG surface\n");
+    exit(1);
+  }
+
+  return xdg_surface_id;
+}
+```
+
+**Reference**: dice.c:208-231
+
+Key points:
+- Uses opcode `2` for `xdg_wm_base::get_xdg_surface`
+- Takes both the new `xdg_surface` ID and the existing `wl_surface` ID
+- The `xdg_surface` is now linked to the `wl_surface`
+
+<Warning>
+An `xdg_surface` must have a role assigned before it can be committed. Use `get_toplevel` to assign the toplevel role.
+</Warning>
+
+## Creating a Toplevel Window
+
+The `create_toplevel()` function assigns the toplevel role to an `xdg_surface`:
+
+```c
+static uint32_t create_toplevel(int sockfd, uint32_t xdg_surface_id) {
+  uint32_t xdg_toplevel_id = wl_id++;
+
+  struct Request req = {
+      .header =
+          {
+              .object_id = xdg_surface_id,
+              .opcode = 1, // xdg_surface::get_toplevel
+              .size = sizeof(struct Header) + sizeof(uint32_t),
+          },
+      .data = &xdg_toplevel_id,
+      .data_len = sizeof(uint32_t),
+  };
+
+  if (write_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: Failed to create toplevel\n");
+    exit(1);
+  }
+
+  return xdg_toplevel_id;
+}
+```
+
+**Reference**: dice.c:233-253
+
+This creates an `xdg_toplevel` object (opcode `1`) which represents a regular application window.
+
+## Putting It All Together
+
+Here's how dice.c creates the complete surface hierarchy:
+
+```c
+if (required_interfaces == 3) {
+  struct Interfaces interfaces;
+  interfaces.surface_id = create_surface(sockfd, wl_compositor_id);
+  interfaces.xdg_surface_id =
+      create_xdg_surface(sockfd, xdg_wm_base_id, interfaces.surface_id);
+  interfaces.toplevel_id =
+      create_toplevel(sockfd, interfaces.xdg_surface_id);
+
+  /* Initial configuration */
+  wl_surface_commit(sockfd, interfaces.surface_id);
+  
+  // ... buffer creation follows ...
+}
+```
+
+**Reference**: dice.c:480-489
+
+<Steps>
+
+### Step 1: Create Base Surface
+
+Create a `wl_surface` from the compositor.
+
+### Step 2: Create XDG Surface
+
+Wrap the `wl_surface` with an `xdg_surface`.
+
+### Step 3: Create Toplevel
+
+Assign the toplevel role to the `xdg_surface`.
+
+### Step 4: Initial Commit
+
+Commit the surface to apply the role and trigger configuration events.
+
+</Steps>
+
+## Surface Commit
+
+The `wl_surface_commit()` function applies pending surface state:
+
+```c
+static void wl_surface_commit(int sockfd, uint32_t surface_id) {
+  struct Request req = {
+      .header =
+          {
+              .object_id = surface_id,
+              .opcode = 6, // wl_surface::commit
+              .size = sizeof(struct Header),
+          },
+      .data = NULL,
+      .data_len = 0,
+  };
+
+  if (write_msg(sockfd, &req) != 0) {
+    fprintf(stderr, "ERROR: Failed to commit surface\n");
+    exit(1);
+  }
+}
+```
+
+**Reference**: dice.c:255-271
+
+### When to Commit
+
+- After creating the surface hierarchy (initial commit)
+- After attaching a buffer to the surface
+- After any surface state changes (damage, transforms, etc.)
+
+<Warning>
+You must commit the surface after creating the toplevel role. The compositor won't configure the window until you commit.
+</Warning>
+
+## Next Steps
+
+After creating surfaces, you need to create buffers to hold pixel data. See [Buffer Management](/guide/buffer-management) to learn about shared memory buffers.
